@@ -304,64 +304,60 @@ class RNN(Model):
         # otherwise, construct our params
         else:
             # input-to-hidden (and hidden-to-hidden higher layer) weights
-            W_x_h = []
-            w_i_j = []
-            U_i_j = []
-            for l in range(self.layers):
-                if l > 0:
-                    W_x_h.append(get_weights(weights_init=self.weights_init,
-                                             shape=(self.hidden_size, self.hidden_size),
-                                             name="W_%d_%d" % (l, l+1),
-                                             # if gaussian
-                                             mean=self.weights_mean,
-                                             std=self.weights_std,
-                                             # if uniform
-                                             interval=self.weights_interval))
-                    #input gating vectors
-                    w_i_j.append(get_weights(weights_init=self.weights_init,
-                                shape=(self.layers, self.input_size),
-                                name="w_%d_%d" % (l, l1),
-                                # if gaussian
-                                mean=self.weights_mean,
-                                std=self.weights_std,
-                                # if uniform
-                                interval=self.weights_interval))
-                else:
-                    W_x_h.append(get_weights(weights_init=self.weights_init,
-                                             shape=(self.input_size, self.hidden_size),
-                                             name="W_%d_%d" % (l, l+1),
-                                                   # if gaussian
-                                             mean=self.weights_mean,
-                                             std=self.weights_std,
-                                             # if uniform
-                                             interval=self.weights_interval))
-                    #input gating vectors
-                    w_i_j.append(get_weights(weights_init=self.weights_init,
-                                shape=(self.layers, self.hidden_size),
-                                name="w_%d_%d" % (l, l1),
-                                # if gaussian
-                                mean=self.weights_mean,
-                                std=self.weights_std,
-                                # if uniform
-                                interval=self.weights_interval))
-                # t-1 to t gated weights
-                U_i_j.append([get_weights(weights_init=self.weights_init,
-                            shape=(self.hidden_size, self.hidden_size),
-                            name="U_%d_%d" % (l, l1),
+            W_x_h = (get_weights(weights_init=self.weights_init,
+                        shape=(self.hidden_size, self.hidden_size),
+                        name="W_%d_%d" % (l, l+1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval))
+            #input gating vectors
+            w_i_j.append(get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.input_size),
+                        name="w_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval))
+            W_hm1_h = get_weights(weights_init=self.weights_init,
+                                     shape=(self.layers-1, self.input_size, self.hidden_size),
+                                     name="W_%d_%d" % (l, l+1),
+                                           # if gaussian
+                                     mean=self.weights_mean,
+                                     std=self.weights_std,
+                                     # if uniform
+                                     interval=self.weights_interval)   
+            #input gating vectors
+            w_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size),
+                        name="w_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
+
+            #previous hidden state gating vector
+            u_ij = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                            name="u_%d%d" % (l, l1),
                             # if gaussian
                             mean=self.weights_mean,
                             std=self.weights_std,
                             # if uniform
-                            interval=self.weights_interval)) for l in range(self.layers)])
-                #previous hidden state gating vector
-                u_ij = (get_weights(weights_init=self.weights_init,
-                                shape=(self.layers, self.hidden_size* self.layers),
-                                name="u_%d%d" % (l, l1),
-                                # if gaussian
-                                mean=self.weights_mean,
-                                std=self.weights_std,
-                                # if uniform
-                                interval=self.weights_interval)) 
+                            interval=self.weights_interval)
+
+            # t-1 to t gated weights
+            U_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                        name="U_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
 
             # hidden-to-hidden same layer weights
             W_h_h = [get_weights(weights_init=self.r_weights_init,
@@ -392,7 +388,7 @@ class RNN(Model):
             b_y = get_bias(shape=(self.output_size,),
                            name="b_y",
                            init_values=self.bias_init)
-           
+               
             # extra parameters necessary for second backward pass on hiddens if this is bidirectional
             if self.bidirectional:
                 # hidden-to-hidden same layer backward weights.
@@ -427,7 +423,7 @@ class RNN(Model):
             fn=self.recurrent_step,
             sequences=hiddens,
             outputs_info= [self.h_init for l in range(self.layers)],
-            non_sequences=[W_x_h, W_h_h, b_h, U_i_j, w_i_j, u_ij]
+            non_sequences=[W_x_h, W_h_h, W_hm1_h, b_h, U_i_j, w_i_j, u_ij]
             go_backwards=self.backward,
             name="rnn_scan_normal",
             strict=True
@@ -461,7 +457,7 @@ class RNN(Model):
         log.info("Initialized a %s RNN!" % self.direction)
         return output, hiddens, updates, cost, params
 
-    def recurrent_step(self, x_t, h_tm1, W_x_h, W_h_h, b_h , U_i_j, w_i_j, u_ij):
+    def recurrent_step(self, x_t, h_tm1, W_x_h, W_hm1_h W_h_h, b_h , U_i_j, w_i_j, u_ij):
         """
         Performs one computation step over time.
 
@@ -488,7 +484,10 @@ class RNN(Model):
         h_jm1 = x_t
         for l in range(self.layers): 
             gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
-            h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+            if l is 0: 
+                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+            else: 
+                h_j = T.dot(x_t, W_hm1_h) + T.dot(h_tm1,W_h_h[l])
             for l1 in range(self.layers): 
                 h_j += gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
             h_jl = self.hidden_activation_function(h_j)  
