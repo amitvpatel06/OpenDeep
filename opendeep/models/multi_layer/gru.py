@@ -38,6 +38,7 @@ class GRU(Model):
     """
     def __init__(self, inputs_hook=None, hiddens_hook=None, params_hook=None, outdir='outputs/gru/',
                  input_size=None, hidden_size=None, output_size=None,
+                 layers=1, 
                  activation='sigmoid', hidden_activation='relu', inner_hidden_activation='sigmoid',
                  mrg=RNG_MRG.MRG_RandomStreams(1),
                  weights_init='uniform', weights_interval='montreal', weights_mean=0, weights_std=5e-3,
@@ -73,6 +74,8 @@ class GRU(Model):
             The size (dimensionality) of the hidden layers. If shape is provided in `hiddens_hook`, this is optional.
         output_size : int
             The size (dimensionality) of the output.
+        layers : int
+            The number of stacked hidden layers to use.
         activation : str or callable
             The nonlinear (or linear) activation to perform after the dot product from hiddens -> output layer.
             This activation function should be appropriate for the output unit types, i.e. 'sigmoid' for binary.
@@ -219,7 +222,7 @@ class GRU(Model):
         ################
         # hiddens hook #
         ################
-        # set an initial value for the recurrent hiddens from hook
+        # set an initial value for the recurrent hiddens from hookz
         if self.hiddens_hook is not None:
             h_init = self.hiddens_hook[1]
             self.hidden_size = self.hiddens_hook[0]
@@ -259,7 +262,7 @@ class GRU(Model):
             # all hidden-to-hidden weights
             U_h_z, U_h_r, U_h_h = [
                 get_weights(weights_init=r_weights_init,
-                            shape=(self.hidden_size, self.hidden_size),
+                            shape=(self.layers, self.hidden_size, self.hidden_size),
                             name="U_h_%s" % sub,
                             # if gaussian
                             mean=r_weights_mean,
@@ -268,6 +271,53 @@ class GRU(Model):
                             interval=r_weights_interval)
                 for sub in ['z', 'r', 'h']
             ]
+            # interlayer weights after input
+            W_hm1_h = get_weights(weights_init=self.weights_init,
+                                     shape=(self.layers-1, self.input_size, self.hidden_size),
+                                     name="W_%d_%d" % (l, l+1),
+                                           # if gaussian
+                                     mean=self.weights_mean,
+                                     std=self.weights_std,
+                                     # if uniform
+                                     interval=self.weights_interval)   
+            #input gating vectors
+            w_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size),
+                        name="w_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
+
+            #previous hidden state gating vector
+            u_ij = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                            name="u_%d%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+            # t-1 to t gated weights
+            U_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                        name="U_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
+            # input-to-hidden weights
+            W_x_h = (get_weights(weights_init=self.weights_init,
+                        shape=(self.hidden_size, self.hidden_size),
+                        name="W_%d_%d" % (l, l+1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval))
             # hidden-to-output weights
             W_h_y = get_weights(weights_init=weights_init,
                                 shape=(self.hidden_size, self.output_size),
@@ -315,7 +365,7 @@ class GRU(Model):
             fn=self.recurrent_step,
             sequences=[x_z, x_r, x_h],
             outputs_info=[h_init],
-            non_sequences=[U_h_z, U_h_r, U_h_h],
+            non_sequences=[U_h_z, U_h_r, U_h_h, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
             go_backwards=not forward,
             name="gru_scan",
             strict=True
@@ -337,23 +387,35 @@ class GRU(Model):
 
         log.info("Initialized a GRU!")
 
-    def recurrent_step(self, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, U_h_h):
+    def recurrent_step(self, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, U_h_h,  W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
         """
-        # update gate
-        z_t = self.inner_hidden_activation_func(
-            x_z_t + T.dot(h_tm1, U_h_z)
-        )
-        # reset gate
-        r_t = self.inner_hidden_activation_func(
-            x_r_t + T.dot(h_tm1, U_h_r)
-        )
-        # new memory content
-        h_tilde = self.hidden_activation_func(
-            x_h_t + r_t*T.dot(h_tm1, U_h_h)
-        )
-        h_t = (1 - z_t)*h_tm1 + z_t*h_tilde
+        z_t = []
+        r_t = []
+        h_tilde = []
+        h_t = []
+        for l in range(self.layers):
+            # update gate
+            z_t[l] = self.inner_hidden_activation_func(
+                x_z_t + T.dot(h_tm1, U_h_z)
+            )
+            # reset gate
+            r_t[l] = self.inner_hidden_activation_func(
+                x_r_t + T.dot(h_tm1, U_h_r)
+            )
+            # gating across layers
+            h_ctm1 = T.concatenate(h_tm1,0)
+            gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
+            if l is 0: 
+                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+            else: 
+                h_j = T.dot(x_t, W_hm1_h) + T.dot(h_tm1,W_h_h[l])
+            for l1 in range(self.layers): 
+                h_j += r_t*gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
+            # new memory content
+            h_tilde[l] = self.hidden_activation_func(h_j)
+            h_t[l] = (1 - z_t)*h_tm1 + z_t*h_tilde
         # return the hiddens
         return h_t
 

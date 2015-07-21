@@ -280,15 +280,6 @@ class LSTM(Model):
                             interval=r_weights_interval)
                 for sub in ['c', 'i', 'f', 'o']
             ]
-            # input-to-hidden weights
-            W_x_h = (get_weights(weights_init=self.weights_init,
-                        shape=(self.hidden_size, self.hidden_size),
-                        name="W_%d_%d" % (l, l+1),
-                        # if gaussian
-                        mean=self.weights_mean,
-                        std=self.weights_std,
-                        # if uniform
-                        interval=self.weights_interval))
             # interlayer weights after input
             W_hm1_h = get_weights(weights_init=self.weights_init,
                                      shape=(self.layers-1, self.input_size, self.hidden_size),
@@ -327,6 +318,15 @@ class LSTM(Model):
                         std=self.weights_std,
                         # if uniform
                         interval=self.weights_interval)
+              # input-to-hidden weights
+            W_x_h = (get_weights(weights_init=self.weights_init,
+                        shape=(self.hidden_size, self.hidden_size),
+                        name="W_%d_%d" % (l, l+1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval))
 
             # hidden-to-output weights
             W_h_y = get_weights(weights_init=weights_init,
@@ -337,6 +337,7 @@ class LSTM(Model):
                                 std=weights_std,
                                 # if uniform
                                 interval=weights_interval)
+            
             # biases
             b_c, b_i, b_f, b_o = [
                 get_bias(shape=(self.hidden_size,),
@@ -456,7 +457,6 @@ class LSTM(Model):
         # new memory content c_tilde
 
         for l in range(self.layers):
-
             h_ctm1 = T.concatenate(h_tm1,0)
             gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
             if l is 0: 
@@ -485,7 +485,7 @@ class LSTM(Model):
             )
             # new hiddens
             h_t[l] = o_t*self.hidden_activation_func(c_t)
-            # return the hiddens and memory content
+        # return the hiddens and memory content
         return h_t, c_t
 
     ###################
