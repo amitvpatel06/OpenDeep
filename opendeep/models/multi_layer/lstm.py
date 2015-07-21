@@ -38,6 +38,7 @@ class LSTM(Model):
     """
     def __init__(self, inputs_hook=None, hiddens_hook=None, params_hook=None, outdir='outputs/lstm/',
                  input_size=None, hidden_size=None, output_size=None,
+                 layers=1,
                  activation='sigmoid', hidden_activation='relu', inner_hidden_activation='sigmoid',
                  mrg=RNG_MRG.MRG_RandomStreams(1),
                  weights_init='uniform', weights_interval='montreal', weights_mean=0, weights_std=5e-3,
@@ -270,7 +271,7 @@ class LSTM(Model):
             # all hidden-to-hidden weights
             U_h_c, U_h_i, U_h_f, U_h_o = [
                 get_weights(weights_init=r_weights_init,
-                            shape=(self.hidden_size, self.hidden_size),
+                            shape=(self.layers, self.hidden_size, self.hidden_size),
                             name="U_h_%s" % sub,
                             # if gaussian
                             mean=r_weights_mean,
@@ -279,6 +280,54 @@ class LSTM(Model):
                             interval=r_weights_interval)
                 for sub in ['c', 'i', 'f', 'o']
             ]
+            # input-to-hidden weights
+            W_x_h = (get_weights(weights_init=self.weights_init,
+                        shape=(self.hidden_size, self.hidden_size),
+                        name="W_%d_%d" % (l, l+1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval))
+            # interlayer weights after input
+            W_hm1_h = get_weights(weights_init=self.weights_init,
+                                     shape=(self.layers-1, self.input_size, self.hidden_size),
+                                     name="W_%d_%d" % (l, l+1),
+                                           # if gaussian
+                                     mean=self.weights_mean,
+                                     std=self.weights_std,
+                                     # if uniform
+                                     interval=self.weights_interval)   
+            #input gating vectors
+            w_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size),
+                        name="w_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
+
+            #previous hidden state gating vector
+            u_ij = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                            name="u_%d%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+            # t-1 to t gated weights
+            U_i_j = get_weights(weights_init=self.weights_init,
+                        shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                        name="U_%d_%d" % (l, l1),
+                        # if gaussian
+                        mean=self.weights_mean,
+                        std=self.weights_std,
+                        # if uniform
+                        interval=self.weights_interval)
+
             # hidden-to-output weights
             W_h_y = get_weights(weights_init=weights_init,
                                 shape=(self.hidden_size, self.output_size),
@@ -343,12 +392,17 @@ class LSTM(Model):
         x_f = T.dot(xs, W_x_f) + b_f
         x_o = T.dot(xs, W_x_o) + b_o
 
+        W_hm1_h
+        w_i_j
+        u_ij
+        U_i_j
+
         # now do the recurrent stuff
         (self.hiddens, _), self.updates = theano.scan(
             fn=self.recurrent_step,
             sequences=[x_c, x_i, x_f, x_o],
             outputs_info=[h_init, c_init],
-            non_sequences=[U_h_c, U_h_i, U_h_f, U_h_o],
+            non_sequences=[U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
             go_backwards=backward,
             name="lstm_scan",
             strict=True
@@ -360,7 +414,7 @@ class LSTM(Model):
                 fn=self.recurrent_step,
                 sequences=[x_c, x_i, x_f, x_o],
                 outputs_info=[h_init, c_init],
-                non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b],
+                non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
                 go_backwards=not backward,
                 name="lstm_scan_back",
                 strict=True
@@ -387,31 +441,51 @@ class LSTM(Model):
 
         log.info("Initialized an LSTM!")
 
-    def recurrent_step(self, x_c_t, x_i_t, x_f_t, x_o_t, h_tm1, c_tm1, U_h_c, U_h_i, U_h_f, U_h_o):
+    def recurrent_step(self, x_c_t, x_i_t, x_f_t, x_o_t, h_tm1, c_tm1, U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
         """
+        h_t = []
+        c_t = []
+        c_tilde = []
+        i_t = []
+        f_t = []
+        c_t = []
+        o_t = []
+        h_t = []
         # new memory content c_tilde
-        c_tilde = self.hidden_activation_func(
-            x_c_t + T.dot(h_tm1, U_h_c)
-        )
-        # input gate
-        i_t = self.inner_hidden_activation_func(
-            x_i_t + T.dot(h_tm1, U_h_i)
-        )
-        # forget gate
-        f_t = self.inner_hidden_activation_func(
-            x_f_t + T.dot(h_tm1, U_h_f)
-        )
-        # new memory content
-        c_t = f_t*c_tm1 + i_t*c_tilde
-        # output gate
-        o_t = self.inner_hidden_activation_func(
-            x_o_t + T.dot(h_tm1, U_h_o)
-        )
-        # new hiddens
-        h_t = o_t*self.hidden_activation_func(c_t)
-        # return the hiddens and memory content
+
+        for l in range(self.layers):
+
+            h_ctm1 = T.concatenate(h_tm1,0)
+            gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
+            if l is 0: 
+                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+            else: 
+                h_j = T.dot(x_t, W_hm1_h) + T.dot(h_tm1,W_h_h[l])
+            for l1 in range(self.layers): 
+                h_j += gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
+
+            c_tilde[l] = self.hidden_activation_func(
+                h_j 
+            )
+            # input gate
+            i_t[l] = self.inner_hidden_activation_func(
+                x_i_t + T.dot(h_tm1, U_h_i[l])
+            )
+            # forget gate
+            f_t[l] = self.inner_hidden_activation_func(
+                x_f_t + T.dot(h_tm1, U_h_f[l])
+            )
+            # new memory content
+            c_t[l] = f_t*c_tm1 + i_t*c_tilde
+            # output gate
+            o_t[l] = self.inner_hidden_activation_func(
+                x_o_t + T.dot(h_tm1, U_h_o[l])
+            )
+            # new hiddens
+            h_t[l] = o_t*self.hidden_activation_func(c_t)
+            # return the hiddens and memory content
         return h_t, c_t
 
     ###################

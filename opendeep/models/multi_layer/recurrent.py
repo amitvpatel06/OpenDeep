@@ -312,15 +312,7 @@ class RNN(Model):
                         std=self.weights_std,
                         # if uniform
                         interval=self.weights_interval))
-            #input gating vectors
-            w_i_j.append(get_weights(weights_init=self.weights_init,
-                        shape=(self.layers, self.input_size),
-                        name="w_%d_%d" % (l, l1),
-                        # if gaussian
-                        mean=self.weights_mean,
-                        std=self.weights_std,
-                        # if uniform
-                        interval=self.weights_interval))
+           
             W_hm1_h = get_weights(weights_init=self.weights_init,
                                      shape=(self.layers-1, self.input_size, self.hidden_size),
                                      name="W_%d_%d" % (l, l+1),
@@ -437,7 +429,7 @@ class RNN(Model):
             fn=self.recurrent_step,
             sequences=hiddens,
             outputs_info= [self.h_init for l in range(self.layers)],
-            non_sequences=[W_x_h, W_h_h, b_h, U_i_j, w_i_j, u_ij]
+            non_sequences=[W_x_h, W_h_h, W_hm1_h, b_h, U_i_j, w_i_j, u_ij]
             go_backwards=(not self.backward),
             name="rnn_scan_backward",
             strict=True
@@ -457,7 +449,7 @@ class RNN(Model):
         log.info("Initialized a %s RNN!" % self.direction)
         return output, hiddens, updates, cost, params
 
-    def recurrent_step(self, x_t, h_tm1, W_x_h, W_hm1_h W_h_h, b_h , U_i_j, w_i_j, u_ij):
+    def recurrent_step(self, x_t, h_tm1, W_x_h, W_h_h, W_hm1_h, b_h , U_i_j, w_i_j, u_ij):
         """
         Performs one computation step over time.
 
