@@ -404,10 +404,11 @@ class GRU(Model):
         x_r = T.dot(xs, W_x_r) + b_r
         x_h = T.dot(xs, W_x_h) + b_h
 
+        hiddens = self.input
         # now do the recurrent stuff
         self.hiddens, self.updates = theano.scan(
             fn=self.recurrent_step,
-            sequences=[x_z, x_r, x_h],
+            sequences=[hiddens, x_z, x_r, x_h],
             outputs_info=[h_init],
             non_sequences=[U_h_z, U_h_r, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
             go_backwards=not forward,
@@ -419,7 +420,7 @@ class GRU(Model):
         if bidirectional:
             (hiddens_b, _), updates_b = theano.scan(
                 fn=self.recurrent_step,
-                sequences=[x_z, x_r, x_h],
+                sequences=[hiddens, x_z, x_r, x_h],
                 outputs_info=[h_init],
                 non_sequences=[U_h_z_b, U_h_r_b, W_hm1_h_b, w_i_j_b, u_ij_b, U_i_j_b, W_x_h],
                 go_backwards=not backward,
@@ -448,7 +449,7 @@ class GRU(Model):
 
         log.info("Initialized a GRU!")
 
-    def recurrent_step(self, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
+    def recurrent_step(self, x_t, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
         """

@@ -435,7 +435,7 @@ class LSTM(Model):
         # now do the recurrent stuff
         (self.hiddens, _), self.updates = theano.scan(
             fn=self.recurrent_step,
-            sequences=[x_c, x_i, x_f, x_o],
+            sequences=[hiddens, x_c, x_i, x_f, x_o],
             outputs_info=[h_init, c_init],
             non_sequences=[U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
             go_backwards=backward,
@@ -447,7 +447,7 @@ class LSTM(Model):
         if bidirectional:
             (hiddens_b, _), updates_b = theano.scan(
                 fn=self.recurrent_step,
-                sequences=[x_c, x_i, x_f, x_o],
+                sequences=[hiddens, x_c, x_i, x_f, x_o],
                 outputs_info=[h_init, c_init],
                 non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, W_hm1_h, w_i_j_b, u_ij_b, U_i_j_b, W_x_h],
                 go_backwards=not backward,
@@ -476,7 +476,7 @@ class LSTM(Model):
 
         log.info("Initialized an LSTM!")
 
-    def recurrent_step(self, x_c_t, x_i_t, x_f_t, x_o_t, h_tm1, c_tm1, U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
+    def recurrent_step(self, x_t, x_c_t, x_i_t, x_f_t, x_o_t, h_tm1, c_tm1, U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
         """

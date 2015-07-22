@@ -406,7 +406,6 @@ class RNN(Model):
                             std=self.weights_std,
                             # if uniform
                             interval=self.weights_interval)
-
             # t-1 to t gated weights
             U_i_j_b = get_weights(weights_init=self.weights_init,
                         shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
@@ -436,6 +435,7 @@ class RNN(Model):
             else: 
                 W_h_h, w_i_j, u_ij, U_i_j = [theano.gradient.grad_clip(p,-clip,clip)
                 for p in [W_h_h, w_i_j, u_ij, U_i_j]]
+
         # make h_init the right sized tensor
         if not self.hiddens_hook:
             self.h_init = T.zeros_like(T.dot(self.input[0], W_x_h[0]))
