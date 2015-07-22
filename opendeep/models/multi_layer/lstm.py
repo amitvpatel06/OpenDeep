@@ -74,6 +74,8 @@ class LSTM(Model):
             The size (dimensionality) of the hidden layers. If shape is provided in `hiddens_hook`, this is optional.
         output_size : int
             The size (dimensionality) of the output.
+        layers : int
+            The number of stacked hidden layers to use.
         activation : str or callable
             The nonlinear (or linear) activation to perform after the dot product from hiddens -> output layer.
             This activation function should be appropriate for the output unit types, i.e. 'sigmoid' for binary.
@@ -318,7 +320,7 @@ class LSTM(Model):
                         std=self.weights_std,
                         # if uniform
                         interval=self.weights_interval)
-              # input-to-hidden weights
+            # input-to-hidden weights
             W_x_h = (get_weights(weights_init=self.weights_init,
                         shape=(self.hidden_size, self.hidden_size),
                         name="W_%d_%d" % (l, l+1),
@@ -349,34 +351,66 @@ class LSTM(Model):
             b_y = get_bias(shape=(self.output_size,),
                            name="b_y",
                            init_values=bias_init)
-            # clip gradients if we are doing that
-            recurrent_params = [U_h_c, U_h_i, U_h_f, U_h_o]
-            if clip_recurrent_grads:
-                clip = abs(clip_recurrent_grads)
-                U_h_c, U_h_i, U_h_f, U_h_o = [theano.gradient.grad_clip(p, -clip, clip) for p in recurrent_params]
-            # bidirectional params
-                if bidirectional:
-                    # all hidden-to-hidden weights
-                    U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = [
-                        get_weights(weights_init=r_weights_init,
-                                    shape=(self.hidden_size, self.hidden_size),
-                                    name="U_h_%s_b" % sub,
-                                    # if gaussian
-                                    mean=r_weights_mean,
-                                    std=r_weights_std,
-                                    # if uniform
-                                    interval=r_weights_interval)
-                        for sub in ['c', 'i', 'f', 'o']
-                    ]
-                    recurrent_params += [U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b]
-                    if clip_recurrent_grads:
-                        clip = abs(clip_recurrent_grads)
-                        U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = [theano.gradient.grad_clip(p, -clip, clip) for p in
-                                                              [U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b]]
+            # put all the parameters into our list, and make sure it is in the same order as when we try to load
+            # them from a params_hook!!!
+            self.params = [W_x_c, W_x_i, W_x_f, W_x_o] + [U_h_c, U_h_i, U_h_f, U_h_o] + [W_h_y, b_c, b_i, b_f, b_o, b_y] 
+                           +[W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h]
 
-        # put all the parameters into our list, and make sure it is in the same order as when we try to load
-        # them from a params_hook!!!
-        self.params = [W_x_c, W_x_i, W_x_f, W_x_o] + recurrent_params + [W_h_y, b_c, b_i, b_f, b_o, b_y]
+            # bidirectional params
+            if bidirectional:
+                # all hidden-to-hidden weights
+                U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = [
+                    get_weights(weights_init=r_weights_init,
+                                shape=(self.hidden_size, self.hidden_size),
+                                name="U_h_%s_b" % sub,
+                                # if gaussian
+                                mean=r_weights_mean,
+                                std=r_weights_std,
+                                # if uniform
+                                interval=r_weights_interval)
+                    for sub in ['c', 'i', 'f', 'o']
+                ]
+                #input gating vectors
+                w_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size),
+                            name="w_%d_%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+                #previous hidden state gating vector
+                u_ij_b = get_weights(weights_init=self.weights_init,
+                                shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                                name="u_%d%d" % (l, l1),
+                                # if gaussian
+                                mean=self.weights_mean,
+                                std=self.weights_std,
+                                # if uniform
+                                interval=self.weights_interval)
+
+                # t-1 to t gated weights
+                U_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                            name="U_%d_%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+            self.params += [U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, w_i_j_b, u_ij_b, U_i_j_b]
+        #clip grads if need to
+        if clip_recurrent_grads:
+            clip = abs(clip_recurrent_grads)
+            if self.bidirectional:
+                U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = 
+                [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                [U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b]]
+            else: 
+                 U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j =  [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                [U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j]]
 
         # make h_init the right sized tensor
         if not self.hiddens_hook:
@@ -415,7 +449,7 @@ class LSTM(Model):
                 fn=self.recurrent_step,
                 sequences=[x_c, x_i, x_f, x_o],
                 outputs_info=[h_init, c_init],
-                non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
+                non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, W_hm1_h, w_i_j_b, u_ij_b, U_i_j_b, W_x_h],
                 go_backwards=not backward,
                 name="lstm_scan_back",
                 strict=True
@@ -454,18 +488,18 @@ class LSTM(Model):
         c_t = []
         o_t = []
         h_t = []
-        # new memory content c_tilde
+        
 
         for l in range(self.layers):
             h_ctm1 = T.concatenate(h_tm1,0)
             gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
             if l is 0: 
-                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_x_h) 
             else: 
-                h_j = T.dot(x_t, W_hm1_h) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_hm1_h[l-1]) 
             for l1 in range(self.layers): 
                 h_j += gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
-
+            # new memory content c_tilde
             c_tilde[l] = self.hidden_activation_func(
                 h_j 
             )

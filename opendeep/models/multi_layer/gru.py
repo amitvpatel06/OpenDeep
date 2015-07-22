@@ -147,6 +147,8 @@ class GRU(Model):
         ##################
         # specifications #
         ##################
+        backward = direction.lower() == 'backward'
+        bidirectional = direction.lower() == 'bidirectional'
 
         #########################################
         # activation, cost, and noise functions #
@@ -260,7 +262,7 @@ class GRU(Model):
                 for sub in ['z', 'r', 'h']
             ]
             # all hidden-to-hidden weights
-            U_h_z, U_h_r, U_h_h = [
+            U_h_z, U_h_r = [
                 get_weights(weights_init=r_weights_init,
                             shape=(self.layers, self.hidden_size, self.hidden_size),
                             name="U_h_%s" % sub,
@@ -269,7 +271,7 @@ class GRU(Model):
                             std=r_weights_std,
                             # if uniform
                             interval=r_weights_interval)
-                for sub in ['z', 'r', 'h']
+                for sub in ['z', 'r']
             ]
             # interlayer weights after input
             W_hm1_h = get_weights(weights_init=self.weights_init,
@@ -309,15 +311,6 @@ class GRU(Model):
                         std=self.weights_std,
                         # if uniform
                         interval=self.weights_interval)
-            # input-to-hidden weights
-            W_x_h = (get_weights(weights_init=self.weights_init,
-                        shape=(self.hidden_size, self.hidden_size),
-                        name="W_%d_%d" % (l, l+1),
-                        # if gaussian
-                        mean=self.weights_mean,
-                        std=self.weights_std,
-                        # if uniform
-                        interval=self.weights_interval))
             # hidden-to-output weights
             W_h_y = get_weights(weights_init=weights_init,
                                 shape=(self.hidden_size, self.output_size),
@@ -338,15 +331,66 @@ class GRU(Model):
             b_y = get_bias(shape=(self.output_size,),
                            name="b_y",
                            init_values=bias_init)
-            # clip gradients if we are doing that
-            recurrent_params = [U_h_z, U_h_r, U_h_h]
+
+            # put all the parameters into our list, and make sure it is in the same order as when we try to load
+            # them from a params_hook!!!
+            self.params = [W_x_z, W_x_r, W_x_h] + [U_h_z, U_h_r] + [W_h_y, b_z, b_r, b_h, b_y] 
+                           +[W_hm1_h, w_i_j, u_ij, U_i_j]
+
+            # bidirectional params
+            if bidirectional:
+                # all hidden-to-hidden weights
+                U_h_z_b, U_h_r_b = [
+                    get_weights(weights_init=r_weights_init,
+                                shape=(self.layers, self.hidden_size, self.hidden_size),
+                                name="U_h_%s_b" % sub,
+                                # if gaussian
+                                mean=r_weights_mean,
+                                std=r_weights_std,
+                                # if uniform
+                                interval=r_weights_interval)
+                    for sub in ['z', 'r']
+                ]   
+                #input gating vectors
+                w_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size),
+                            name="w_%d_%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+                #previous hidden state gating vector
+                u_ij_b = get_weights(weights_init=self.weights_init,
+                                shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                                name="u_%d%d" % (l, l1),
+                                # if gaussian
+                                mean=self.weights_mean,
+                                std=self.weights_std,
+                                # if uniform
+                                interval=self.weights_interval)
+
+                # t-1 to t gated weights
+                U_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                            name="U_%d_%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+                self.params += [U_h_z_b, U_h_r_b] +[W_hm1_h_b, w_i_j_b, u_ij_b, U_i_j_b]
+            #clip grads if need to
             if clip_recurrent_grads:
                 clip = abs(clip_recurrent_grads)
-                U_h_z, U_h_r, U_h_h = [theano.gradient.grad_clip(p, -clip, clip) for p in recurrent_params]
-
-        # put all the parameters into our list, and make sure it is in the same order as when we try to load
-        # them from a params_hook!!!
-        self.params = [W_x_z, W_x_r, W_x_h] + recurrent_params + [W_h_y, b_z, b_r, b_h, b_y]
+                if self.bidirectional:
+                    U_h_z, U_h_r, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_z_b, U_h_r_b = 
+                    [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                    [U_h_z, U_h_r, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_z_b, U_h_r_b]]
+                else: 
+                      U_h_z, U_h_r, w_i_j, u_ij, U_i_j =  [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                    [ U_h_z, U_h_r, w_i_j, u_ij, U_i_j]]
 
         # make h_init the right sized tensor
         if not self.hiddens_hook:
@@ -365,11 +409,28 @@ class GRU(Model):
             fn=self.recurrent_step,
             sequences=[x_z, x_r, x_h],
             outputs_info=[h_init],
-            non_sequences=[U_h_z, U_h_r, U_h_h, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
+            non_sequences=[U_h_z, U_h_r, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
             go_backwards=not forward,
             name="gru_scan",
             strict=True
         )
+
+        # if bidirectional, do the same in reverse!
+        if bidirectional:
+            (hiddens_b, _), updates_b = theano.scan(
+                fn=self.recurrent_step,
+                sequences=[x_z, x_r, x_h],
+                outputs_info=[h_init],
+                non_sequences=[U_h_z_b, U_h_r_b, W_hm1_h_b, w_i_j_b, u_ij_b, U_i_j_b, W_x_h],
+                go_backwards=not backward,
+                name="gru_scan_back",
+                strict=True
+            )
+            # flip the hiddens to be the right direction
+            hiddens_b = hiddens_b[::-1]
+            # update stuff
+            self.updates.update(updates_b)
+            self.hiddens += hiddens_b
 
         # add noise (like dropout) if we wanted it!
         if noise:
@@ -387,7 +448,7 @@ class GRU(Model):
 
         log.info("Initialized a GRU!")
 
-    def recurrent_step(self, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, U_h_h,  W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
+    def recurrent_step(self, x_z_t, x_r_t, x_h_t, h_tm1, U_h_z, U_h_r, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
         """
@@ -408,9 +469,9 @@ class GRU(Model):
             h_ctm1 = T.concatenate(h_tm1,0)
             gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
             if l is 0: 
-                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_x_h) 
             else: 
-                h_j = T.dot(x_t, W_hm1_h) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_hm1_h[l-1]) 
             for l1 in range(self.layers): 
                 h_j += r_t*gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
             # new memory content
