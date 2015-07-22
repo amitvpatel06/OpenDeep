@@ -1,10 +1,9 @@
 """
-This module provides a framework for constructing recurrent networks. Recurrent networks have an internal hidden
-state that keeps memory over time.
+Simple single-hidden-layer LSTM
 """
-__authors__ = ["Markus Beissinger", "Skylar Payne"]
+__authors__ = "Markus Beissinger"
 __copyright__ = "Copyright 2015, Vitruvian Science"
-__credits__ = ["Markus Beissinger", "Skylar Payne"]
+__credits__ = ["Markus Beissinger"]
 __license__ = "Apache"
 __maintainer__ = "OpenDeep"
 __email__ = "opendeep-dev@googlegroups.com"
@@ -16,45 +15,31 @@ import theano
 import theano.tensor as T
 import theano.sandbox.rng_mrg as RNG_MRG
 # internal references
-from opendeep.utils.constructors import sharedX, function
+from opendeep.utils.constructors import sharedX
 from opendeep.models.model import Model
 from opendeep.utils.activation import get_activation_function
 from opendeep.utils.cost import get_cost_function
 from opendeep.utils.decay import get_decay_function
 from opendeep.utils.decorators import inherit_docs
-from opendeep.utils.misc import raise_to_list
 from opendeep.utils.nnet import get_weights, get_bias
 from opendeep.utils.noise import get_noise
 
 log = logging.getLogger(__name__)
 
 @inherit_docs
-class RNN(Model):
+class LSTM(Model):
     """
-    Your run-of-the-mill recurrent neural network. This has hidden units that keep track of memory over time.
+    Your normal lstm.
 
-    Notes
-    -----
-    Bidirectional and deep hidden layers implemented like in:
-
-    "Towards End-to-End Speech Recognition with Recurrent Neural Networks".
-    Alex Graves, Navdeep Jaitly.
-    http://www.jmlr.org/proceedings/papers/v32/graves14.pdf
-
-    "Deep Speech: Scaling up end-to-end speech recognition".
-    Awni Hannun, Carl Case, Jared Casper, Bryan Catanzaro, Greg Diamos, Erich Elsen,
-    Ryan Prenger, Sanjeev Satheesh, Shubho Sengupta, Adam Coates, Andrew Y. Ng.
-    http://arxiv.org/pdf/1412.5567v2.pdf
-
-    Stacked layers implemented like in:
+    Implemented from:
     "Gated Feedback Recurrent Neural Networks"
     Junyoung Chung, Caglar Gulcehre, Kyunghyun Cho, Yoshua Bengio
-    http://arxiv.org/abs/1502.02367
+    http://arxiv.org/pdf/1502.02367v3.pdf
     """
-    def __init__(self, inputs_hook=None, hiddens_hook=None, params_hook=None, outdir='outputs/rnn/',
+    def __init__(self, inputs_hook=None, hiddens_hook=None, params_hook=None, outdir='outputs/lstm/',
                  input_size=None, hidden_size=None, output_size=None,
                  layers=1,
-                 activation='sigmoid', hidden_activation='relu',
+                 activation='sigmoid', hidden_activation='relu', inner_hidden_activation='sigmoid',
                  mrg=RNG_MRG.MRG_RandomStreams(1),
                  weights_init='uniform', weights_interval='montreal', weights_mean=0, weights_std=5e-3,
                  bias_init=0.0,
@@ -97,7 +82,11 @@ class RNN(Model):
             See opendeep.utils.activation for a list of available activation functions. Alternatively, you can pass
             your own function to be used as long as it is callable.
         hidden_activation : str or callable
-            The activation to perform for the hidden layers.
+            The activation to perform for the hidden units.
+            See opendeep.utils.activation for a list of available activation functions. Alternatively, you can pass
+            your own function to be used as long as it is callable.
+        inner_hidden_activation : str or callable
+            The activation to perform for the hidden gates.
             See opendeep.utils.activation for a list of available activation functions. Alternatively, you can pass
             your own function to be used as long as it is callable.
         mrg : random
@@ -144,67 +133,46 @@ class RNN(Model):
             The amount to reduce the `noise_level` after each training epoch based on the decay function specified
             in `noise_decay`.
         direction : str
-            The direction this recurrent model should go over its inputs. Can be 'forward', 'backward', or
-            'bidirectional'. In the case of 'bidirectional', it will make two passes over the sequence,
-            computing two sets of hiddens and merging them before running through the final decoder.
+            The direction this recurrent model should go over its inputs.
+            Can be 'forward', 'backward', or 'bidirectional'.
         clip_recurrent_grads : False or float, optional
             Whether to clip the gradients for the parameters that unroll over timesteps (such as the weights
             connecting previous hidden states to the current hidden state, and not the weights from current
             input to hiddens). If it is a float, the gradients for the weights will be hard clipped to the range
             `+-clip_recurrent_grads`.
-
-        Raises
-        ------
-        AssertionError
-            When asserting various properties of input parameters. See error messages.
         """
         initial_parameters = locals().copy()
         initial_parameters.pop('self')
-        super(RNN, self).__init__(**initial_parameters)
+        super(LSTM, self).__init__(**initial_parameters)
 
         ##################
         # specifications #
         ##################
-        self.direction = direction
-        self.bidirectional = (direction == "bidirectional")
-        self.backward = (direction == "backward")
-        self.layers = layers
-        self.noise = noise
-
-        self.weights_init = weights_init
-        self.weights_mean = weights_mean
-        self.weights_std = weights_std
-        self.weights_interval = weights_interval
-
-        self.r_weights_init = r_weights_init
-        self.r_weights_mean = r_weights_mean
-        self.r_weights_std = r_weights_std
-        self.r_weights_interval = r_weights_interval
-
-        self.bias_init = bias_init
-        self.r_bias_init = r_bias_init
+        backward = direction.lower() == 'backward'
+        bidirectional = direction.lower() == 'bidirectional'
 
         #########################################
         # activation, cost, and noise functions #
         #########################################
         # recurrent hidden activation function!
         self.hidden_activation_func = get_activation_function(hidden_activation)
+        self.inner_hidden_activation_func = get_activation_function(inner_hidden_activation)
 
         # output activation function!
-        self.activation_func = get_activation_function(activation)
+        activation_func = get_activation_function(activation)
 
         # Cost function
-        self.cost_function = get_cost_function(cost_function)
-        self.cost_args = cost_args or dict()
+        cost_function = get_cost_function(cost_function)
+        cost_args = cost_args or dict()
 
         # Now deal with noise if we added it:
-        if self.noise:
+        if noise:
             log.debug('Adding %s noise switch.' % str(noise))
             if noise_level is not None:
                 noise_level = sharedX(value=noise_level)
-                self.noise_func = get_noise(noise, noise_level=noise_level, mrg=mrg)
+                noise_func = get_noise(noise, noise_level=noise_level, mrg=mrg)
             else:
-                self.noise_func = get_noise(noise, mrg=mrg)
+                noise_func = get_noise(noise, mrg=mrg)
             # apply the noise as a switch!
             # default to apply noise. this is for the cost and gradient functions to be computed later
             # (not sure if the above statement is accurate such that gradient depends on initial value of switch)
@@ -241,26 +209,25 @@ class RNN(Model):
                 self.input_size = sum(self.input_size)
             else:
                 raise NotImplementedError("Recurrent input with %d dimensions not supported!" % self.input.ndim)
+            xs = self.input
         else:
             # Assume input coming from optimizer is (batches, timesteps, data)
             # so, we need to reshape to (timesteps, batches, data)
-            xs = T.tensor3("Xs")
-            xs = xs.dimshuffle(1, 0, 2)
-            self.input = xs
+            self.input = T.tensor3("Xs")
+            xs = self.input.dimshuffle(1, 0, 2)
 
         # The target outputs for supervised training - in the form of (batches, timesteps, output) which is
         # the same dimension ordering as the expected input from optimizer.
         # therefore, we need to swap it like we did to input xs.
-        ys = T.tensor3("Ys")
-        ys = ys.dimshuffle(1, 0, 2)
-        self.target = ys
+        self.target = T.tensor3("Ys")
+        ys = self.target.dimshuffle(1, 0, 2)
 
         ################
         # hiddens hook #
         ################
         # set an initial value for the recurrent hiddens from hook
         if self.hiddens_hook is not None:
-            self.h_init = self.hiddens_hook[1]
+            h_init = self.hiddens_hook[1]
             self.hidden_size = self.hiddens_hook[0]
         else:
             # deal with h_init after parameters are made (have to make the same size as hiddens that are computed)
@@ -272,57 +239,50 @@ class RNN(Model):
         # symbolic scalar for how many recurrent steps to use during generation from the model
         self.n_steps = T.iscalar("generate_n_steps")
 
-        self.output, self.hiddens, self.updates, self.cost, self.params = self.build_computation_graph()
-
-    def build_computation_graph(self):
-        """
-        Creates the output, hiddens, updates, cost, and parameters for the RNN!
-
-        Returns
-        -------
-        Output, top-level hiddens, updates, cost, and parameters for the RNN.
-        """
         ####################################################
         # parameters - make sure to deal with params_hook! #
         ####################################################
         if self.params_hook is not None:
-            # expect at least W_{x_h}, W_{h_h}, W_{h_y}, b_h, b_y -> this is for single-direction RNN.
-            assert len(self.params_hook) >= 3*self.layers+2, \
-                "Expected at least {0!s} params for rnn, found {1!s}!".format(3*self.layers+2, len(self.params_hook))
-            W_x_h = self.params_hook[:self.layers]
-            W_h_h = self.params_hook[self.layers:2*self.layers]
-            b_h   = self.params_hook[2*self.layers:3*self.layers]
-            W_h_y = self.params_hook[3*self.layers]
-            b_y   = self.params_hook[3*self.layers+1]
-            # now the case for extra parameters dealing with a backward pass in addition to forward (bidirectional)
-            if self.bidirectional:
-                assert len(self.params_hook) >= 4*self.layers+2, \
-                    "Expected at least {0!s} params for bidirectional (merging hiddens) rnn, found {1!s}!".format(
-                        4*self.layers+2, len(self.params_hook))
-                # if we are merging according to DeepSpeech paper, this is all we need in addition for bidirectional.
-                W_h_hb = self.params_hook[3*self.layers+2:4*self.layers+2]
+            if not bidirectional:
+                (W_x_c, W_x_i, W_x_f, W_x_o,
+                 U_h_c, U_h_i, U_h_f, U_h_o,
+                 W_h_y, b_c, b_i, b_f, b_o,
+                 b_y) = self.params_hook
+                recurrent_params = [U_h_c, U_h_i, U_h_f, U_h_o]
+            else:
+                (W_x_c, W_x_i, W_x_f, W_x_o,
+                 U_h_c, U_h_i, U_h_f, U_h_o,
+                 U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b,
+                 W_h_y, b_c, b_i, b_f, b_o,
+                 b_y) = self.params_hook
+                recurrent_params = [U_h_c, U_h_i, U_h_f, U_h_o, U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b]
         # otherwise, construct our params
         else:
-            # input-to-hidden weights
-            W_x_h = (get_weights(weights_init=self.weights_init,
-                        shape=(self.hidden_size, self.hidden_size),
-                        name="W_%d_%d" % (l, l+1),
-                        # if gaussian
-                        mean=self.weights_mean,
-                        std=self.weights_std,
-                        # if uniform
-                        interval=self.weights_interval))
-            # hidden-to-hidden same layer weights
-            W_h_h = [get_weights(weights_init=self.r_weights_init,
-                                 shape=(self.hidden_size, self.hidden_size),
-                                 name="W_%d_%d" % (l+1, l+1),
-                                 # if gaussian
-                                 mean=self.r_weights_mean,
-                                 std=self.r_weights_std,
-                                 # if uniform
-                                 interval=self.r_weights_interval)
-                     for l in range(self.layers)]
-           
+            # all input-to-hidden weights
+            W_x_c, W_x_i, W_x_f, W_x_o = [
+                get_weights(weights_init=weights_init,
+                            shape=(self.input_size, self.hidden_size),
+                            name="W_x_%s" % sub,
+                            # if gaussian
+                            mean=weights_mean,
+                            std=weights_std,
+                            # if uniform
+                            interval=weights_interval)
+                for sub in ['c', 'i', 'f', 'o']
+            ]
+            # all hidden-to-hidden weights
+            U_h_c, U_h_i, U_h_f, U_h_o = [
+                get_weights(weights_init=r_weights_init,
+                            shape=(self.layers, self.hidden_size, self.hidden_size),
+                            name="U_h_%s" % sub,
+                            # if gaussian
+                            mean=r_weights_mean,
+                            std=r_weights_std,
+                            # if uniform
+                            interval=r_weights_interval)
+                for sub in ['c', 'i', 'f', 'o']
+            ]
+            # interlayer weights after input
             W_hm1_h = get_weights(weights_init=self.weights_init,
                                      shape=(self.layers-1, self.input_size, self.hidden_size),
                                      name="W_%d_%d" % (l, l+1),
@@ -360,171 +320,208 @@ class RNN(Model):
                         std=self.weights_std,
                         # if uniform
                         interval=self.weights_interval)
-
-            # hidden-to-output weights
-            W_h_y = get_weights(weights_init=self.weights_init,
-                                shape=(self.hidden_size, self.output_size),
-                                name="W_h_y",
-                                # if gaussian
-                                mean=self.weights_mean,
-                                std=self.weights_std,
-                                # if uniform
-                                interval=self.weights_interval)
-            # hidden bias for each layer
-            b_h = [get_bias(shape=(self.hidden_size,),
-                            name="b_h_%d" % (l+1),
-                            init_values=self.r_bias_init)
-                   for l in range(self.layers)]
-            # output bias
-            b_y = get_bias(shape=(self.output_size,),
-                           name="b_y",
-                           init_values=self.bias_init)
-               
-            # extra parameters necessary for second backward pass on hiddens if this is bidirectional
-            if self.bidirectional:
-                
-        # put all the parameters into our list, and make sure it is in the same order as when we try to load
-        # them from a params_hook!!!
-        params = W_x_h + W_h_h + b_h + [W_h_y] + [b_y] + U_i_j + w_i_j + u_ij
-        if self.bidirectional:
-            #input gating vectors
-            w_i_j_b = get_weights(weights_init=self.weights_init,
-                        shape=(self.layers, self.layers, self.hidden_size),
-                        name="w_%d_%d" % (l, l1),
+            # input-to-hidden weights
+            W_x_h = (get_weights(weights_init=self.weights_init,
+                        shape=(self.hidden_size, self.hidden_size),
+                        name="W_%d_%d" % (l, l+1),
                         # if gaussian
                         mean=self.weights_mean,
                         std=self.weights_std,
                         # if uniform
-                        interval=self.weights_interval)
+                        interval=self.weights_interval))
 
-            #previous hidden state gating vector
-            u_ij_b = get_weights(weights_init=self.weights_init,
-                            shape=(self.layers, self.layers, self.hidden_size* self.layers),
-                            name="u_%d%d" % (l, l1),
+            # hidden-to-output weights
+            W_h_y = get_weights(weights_init=weights_init,
+                                shape=(self.hidden_size, self.output_size),
+                                name="W_h_y",
+                                # if gaussian
+                                mean=weights_mean,
+                                std=weights_std,
+                                # if uniform
+                                interval=weights_interval)
+            
+            # biases
+            b_c, b_i, b_f, b_o = [
+                get_bias(shape=(self.hidden_size,),
+                         name="b_%s" % sub,
+                         init_values=r_bias_init)
+                for sub in ['c', 'i', 'f', 'o']
+            ]
+            # output bias
+            b_y = get_bias(shape=(self.output_size,),
+                           name="b_y",
+                           init_values=bias_init)
+            # put all the parameters into our list, and make sure it is in the same order as when we try to load
+            # them from a params_hook!!!
+            self.params = [W_x_c, W_x_i, W_x_f, W_x_o] + [U_h_c, U_h_i, U_h_f, U_h_o] + [W_h_y, b_c, b_i, b_f, b_o, b_y] 
+                           +[W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h]
+
+            # bidirectional params
+            if bidirectional:
+                # all hidden-to-hidden weights
+                U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = [
+                    get_weights(weights_init=r_weights_init,
+                                shape=(self.hidden_size, self.hidden_size),
+                                name="U_h_%s_b" % sub,
+                                # if gaussian
+                                mean=r_weights_mean,
+                                std=r_weights_std,
+                                # if uniform
+                                interval=r_weights_interval)
+                    for sub in ['c', 'i', 'f', 'o']
+                ]
+                #input gating vectors
+                w_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size),
+                            name="w_%d_%d" % (l, l1),
                             # if gaussian
                             mean=self.weights_mean,
                             std=self.weights_std,
                             # if uniform
                             interval=self.weights_interval)
 
-            # t-1 to t gated weights
-            U_i_j_b = get_weights(weights_init=self.weights_init,
-                        shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
-                        name="U_%d_%d" % (l, l1),
-                        # if gaussian
-                        mean=self.weights_mean,
-                        std=self.weights_std,
-                        # if uniform
-                        interval=self.weights_interval)
-            # hidden-to-hidden same layer weights
-            W_h_h_b = [get_weights(weights_init=self.r_weights_init,
-                                 shape=(self.hidden_size, self.hidden_size),
-                                 name="W_%d_%d" % (l+1, l+1),
-                                 # if gaussian
-                                 mean=self.r_weights_mean,
-                                 std=self.r_weights_std,
-                                 # if uniform
-                                 interval=self.r_weights_interval)
-                     for l in range(self.layers)]
-            params += [W_h_h_b, w_i_j_b, u_ij_b, U_i_j_b]
-        #clip recurrent grads
+                #previous hidden state gating vector
+                u_ij_b = get_weights(weights_init=self.weights_init,
+                                shape=(self.layers, self.layers, self.hidden_size* self.layers),
+                                name="u_%d%d" % (l, l1),
+                                # if gaussian
+                                mean=self.weights_mean,
+                                std=self.weights_std,
+                                # if uniform
+                                interval=self.weights_interval)
+
+                # t-1 to t gated weights
+                U_i_j_b = get_weights(weights_init=self.weights_init,
+                            shape=(self.layers, self.layers, self.hidden_size, self.hidden_size),
+                            name="U_%d_%d" % (l, l1),
+                            # if gaussian
+                            mean=self.weights_mean,
+                            std=self.weights_std,
+                            # if uniform
+                            interval=self.weights_interval)
+
+            self.params += [U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, w_i_j_b, u_ij_b, U_i_j_b]
+        #clip grads if need to
         if clip_recurrent_grads:
             clip = abs(clip_recurrent_grads)
             if self.bidirectional:
-                W_h_h, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, W_h_h_b = [theano.gradient.grad_clip(p,-clip,clip)
-                for p in [W_h_h, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, W_h_h_b]]
+                U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b = 
+                [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                [U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j, w_i_j_b, u_ij_b, U_i_j_b, U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b]]
             else: 
-                W_h_h, w_i_j, u_ij, U_i_j = [theano.gradient.grad_clip(p,-clip,clip)
-                for p in [W_h_h, w_i_j, u_ij, U_i_j]]
+                 U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j =  [theano.gradient.grad_clip(p,-clip,clip) for p in 
+                [U_h_c, U_h_i, U_h_f, U_h_o, w_i_j, u_ij, U_i_j]]
+
         # make h_init the right sized tensor
         if not self.hiddens_hook:
-            self.h_init = T.zeros_like(T.dot(self.input[0], W_x_h[0]))
+            h_init = T.zeros_like(T.dot(xs[0], W_x_c))
+
+        c_init = T.zeros_like(T.dot(xs[0], W_x_c))
 
         ###############
         # computation #
         ###############
-        hiddens = self.input
-        updates = dict()
-        # vanilla case! there will be only 1 hidden layer for each depth layer.
+        # move some computation outside of scan to speed it up!
+        x_c = T.dot(xs, W_x_c) + b_c
+        x_i = T.dot(xs, W_x_i) + b_i
+        x_f = T.dot(xs, W_x_f) + b_f
+        x_o = T.dot(xs, W_x_o) + b_o
 
-        # normal case -  either forward or just backward!
-        hiddens, updates = theano.scan(
-            fn=self.recurrent_step,
-            sequences=hiddens,
-            outputs_info= [self.h_init for l in range(self.layers)],
-            non_sequences=[W_x_h, W_h_h, W_hm1_h, b_h, U_i_j, w_i_j, u_ij]
-            go_backwards=self.backward,
-            name="rnn_scan_normal",
-            strict=True
-        )       
-        updates.update(updates)
+        W_hm1_h
+        w_i_j
+        u_ij
+        U_i_j
 
-        # bidirectional case - need to add a backward sequential pass to compute new hiddens!
-        if self.bidirectional:
-            hiddens_opposite, updates_opposite = theano.scan(
-            # now do the opposite direction for the scan!
+        # now do the recurrent stuff
+        (self.hiddens, _), self.updates = theano.scan(
             fn=self.recurrent_step,
-            sequences=hiddens,
-            outputs_info= [self.h_init for l in range(self.layers)],
-            non_sequences=[W_x_h, W_h_h_b, W_hm1_h, b_h, U_i_j_b, w_i_j_b, u_ij_b]
-            go_backwards=(not self.backward),
-            name="rnn_scan_backward",
+            sequences=[x_c, x_i, x_f, x_o],
+            outputs_info=[h_init, c_init],
+            non_sequences=[U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h],
+            go_backwards=backward,
+            name="lstm_scan",
             strict=True
+        )
+
+        # if bidirectional, do the same in reverse!
+        if bidirectional:
+            (hiddens_b, _), updates_b = theano.scan(
+                fn=self.recurrent_step,
+                sequences=[x_c, x_i, x_f, x_o],
+                outputs_info=[h_init, c_init],
+                non_sequences=[U_h_c_b, U_h_i_b, U_h_f_b, U_h_o_b, W_hm1_h, w_i_j_b, u_ij_b, U_i_j_b, W_x_h],
+                go_backwards=not backward,
+                name="lstm_scan_back",
+                strict=True
             )
-            updates.update(updates_opposite)
-            hiddens_new = hiddens_new + hiddens_opposite
-        
-        
+            # flip the hiddens to be the right direction
+            hiddens_b = hiddens_b[::-1]
+            # update stuff
+            self.updates.update(updates_b)
+            self.hiddens += hiddens_b
+
+        # add noise (like dropout) if we wanted it!
+        if noise:
+            self.hiddens = T.switch(self.noise_switch,
+                                    noise_func(input=self.hiddens),
+                                    self.hiddens)
+
         # now compute the outputs from the leftover (top level) hiddens
-        output = self.activation_func(
-            T.dot(hiddens, W_h_y) + b_y
+        self.output = activation_func(
+            T.dot(self.hiddens, W_h_y) + b_y
         )
 
         # now to define the cost of the model - use the cost function to compare our output with the target value.
-        cost = self.cost_function(output=output, target=self.target, **self.cost_args)
+        self.cost = cost_function(output=self.output, target=ys, **cost_args)
 
-        log.info("Initialized a %s RNN!" % self.direction)
-        return output, hiddens, updates, cost, params
+        log.info("Initialized an LSTM!")
 
-    def recurrent_step(self, x_t, h_tm1, W_x_h, W_h_h, W_hm1_h, b_h , U_i_j, w_i_j, u_ij):
+    def recurrent_step(self, x_c_t, x_i_t, x_f_t, x_o_t, h_tm1, c_tm1, U_h_c, U_h_i, U_h_f, U_h_o, W_hm1_h, w_i_j, u_ij, U_i_j, W_x_h):
         """
         Performs one computation step over time.
-
-        Parameters
-        ----------
-        x_t : tensor
-            The current timestep (t) input value.
-        h_tm1 : tensor
-            The previous timestep (t-1) hidden values.
-        W_x_h : shared variable
-            The input-to-hidden weights matrix to use.
-        W_h_h : shared variable
-            The hidden-to-hidden timestep weights matrix to use (differs when bidirectional).
-        b_h : shared variable
-            The hidden bias to use (differs when bidirectional).
-
-        Returns
-        -------
-        tensor
-            h_t the current timestep (t) hidden values.
         """
         h_t = []
-        h_ctm1 = T.concatenate(h_tm1,0)
-        h_jm1 = x_t
-        for l in range(self.layers): 
+        c_t = []
+        c_tilde = []
+        i_t = []
+        f_t = []
+        c_t = []
+        o_t = []
+        h_t = []
+        
+
+        for l in range(self.layers):
+            h_ctm1 = T.concatenate(h_tm1,0)
             gj_ij = T.sigmoid(T.dot(w_i_j[l],x_t) + T.dot(u_ij[l],h_ctm1))
             if l is 0: 
-                h_j = T.dot(x_t, W_x_h) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_x_h) 
             else: 
-                h_j = T.dot(x_t, W_hm1_h[l-1]) + T.dot(h_tm1,W_h_h[l])
+                h_j = T.dot(x_t, W_hm1_h[l-1]) 
             for l1 in range(self.layers): 
                 h_j += gj_ij[l1] * T.dot(U_i_j[l][l1], h_tm1[l1])
-            h_jl = self.hidden_activation_function(h_j)  
-            h_t.append(h_jl)
-            h_jm1 = h_jl
-        return h_t
+            # new memory content c_tilde
+            c_tilde[l] = self.hidden_activation_func(
+                h_j 
+            )
+            # input gate
+            i_t[l] = self.inner_hidden_activation_func(
+                x_i_t + T.dot(h_tm1, U_h_i[l])
+            )
+            # forget gate
+            f_t[l] = self.inner_hidden_activation_func(
+                x_f_t + T.dot(h_tm1, U_h_f[l])
+            )
+            # new memory content
+            c_t[l] = f_t*c_tm1 + i_t*c_tilde
+            # output gate
+            o_t[l] = self.inner_hidden_activation_func(
+                x_o_t + T.dot(h_tm1, U_h_o[l])
+            )
+            # new hiddens
+            h_t[l] = o_t*self.hidden_activation_func(c_t)
+        # return the hiddens and memory content
+        return h_t, c_t
 
-    #
     ###################
     # Model functions #
     ###################
@@ -555,16 +552,16 @@ class RNN(Model):
             # noise scheduling
             return [self.noise_schedule]
         else:
-            return super(RNN, self).get_decay_params()
+            return super(LSTM, self).get_decay_params()
 
     def get_noise_switch(self):
         if hasattr(self, 'noise_switch'):
             return [self.noise_switch]
         else:
-            return super(RNN, self).get_noise_switch()
+            return super(LSTM, self).get_noise_switch()
 
     def get_params(self):
         return self.params
 
-    def save_args(self, args_file="rnn_config.pkl"):
-        super(RNN, self).save_args(args_file)
+    def save_args(self, args_file="lstm_config.pkl"):
+        super(LSTM, self).save_args(args_file)
